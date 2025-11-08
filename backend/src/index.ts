@@ -14,7 +14,7 @@ dotenv.config();
 // CONFIGURATION
 // ============================================================================
 
-const PORT = process.env.PORT || 8090;
+const PORT = process.env.PORT || 5090;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const POLYMARKET_MCP_URL = process.env.POLYMARKET_MCP_URL ||
   "https://server.smithery.ai/@aryankeluskar/polymarket-mcp/mcp";
@@ -267,6 +267,13 @@ async function processMessageWithClaude(
 - View recent trading activity
 - Provide insights on market sentiment
 
+**IMPORTANT SEARCH STRATEGIES:**
+- When searching for specific markets, ALWAYS use the \`query\` parameter in \`search_markets\` with relevant keywords
+- Try multiple search variations if the first search doesn't find results (e.g., "Bitcoin $100k", "BTC 100k", "Bitcoin exceed 100000")
+- By default, searches only return active markets. Set \`closed: true\` if you need to search closed markets
+- If a specific search fails, try broader searches or use \`list_tags\` to find relevant categories
+- Order results by \`volume24hr\` or \`volume\` to find the most active markets
+
 When users ask about prediction markets, use the available tools to fetch real-time data from Polymarket.
 Present the information in a clear, engaging way with proper formatting.
 
@@ -307,7 +314,7 @@ Always explain what the probabilities mean and provide context for the markets y
                 arguments: toolUse.input as Record<string, unknown>,
               });
 
-              console.log(`✅ Tool result received for ${toolUse.name}`);
+              console.log(`✅ Tool result received for ${toolUse.name} : ${JSON.stringify(result.content)}`);
 
               return {
                 type: "tool_result" as const,
