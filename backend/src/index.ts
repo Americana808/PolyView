@@ -268,6 +268,18 @@ async function processMessageWithClaude(
 - View recent trading activity
 - Provide insights on market sentiment
 
+**CHART VISUALIZATION:**
+When users ask for charts, comparisons, or visualizations, include these trigger phrases in your response:
+- "volume chart for [topic]" - Shows market volume comparison
+- "chart: [topic]" - Triggers chart for specific topic
+- "compare markets for [topic]" - Shows comparative volume chart
+- "visualize [topic] markets" - Shows market visualization
+
+Examples:
+- User asks: "Show me Bitcoin market data" → Include "volume chart for bitcoin" in your response
+- User asks: "Compare Trump vs Harris markets" → Include "compare markets for election" 
+- User asks: "Visualize sports betting" → Include "chart: sports" in your response
+
 **IMPORTANT SEARCH STRATEGIES:**
 - When searching for specific markets, ALWAYS use the \`query\` parameter in \`search_markets\` with relevant keywords
 - Try multiple search variations if the first search doesn't find results (e.g., "Bitcoin $100k", "BTC 100k", "Bitcoin exceed 100000")
@@ -278,7 +290,8 @@ async function processMessageWithClaude(
 When users ask about prediction markets, use the available tools to fetch real-time data from Polymarket.
 Present the information in a clear, engaging way with proper formatting.
 
-Always explain what the probabilities mean and provide context for the markets you're analyzing.`,
+Always explain what the probabilities mean and provide context for the markets you're analyzing.
+Include chart triggers when users want to see data visualizations.`,
       messages,
       tools: availableTools,
     });
@@ -518,6 +531,123 @@ app.get("/tools", (req, res) => {
       description: tool.description,
     })),
   });
+});
+
+// Test MCP search endpoint
+app.get("/test-search", async (req, res) => {
+  try {
+    const { query = "Trump" } = req.query;
+    
+    if (!mcpClient) {
+      return res.status(503).json({ error: "MCP client not connected" });
+    }
+
+    console.log(`🔍 Testing MCP search for: ${query}`);
+
+    const searchResult = await mcpClient.callTool({
+      name: "search_markets",
+      arguments: { 
+        query: query as string,
+        limit: 5
+      }
+    });
+
+    const rawResult = JSON.stringify(searchResult, null, 2);
+    console.log("Raw MCP result:", rawResult);
+
+    res.json({ 
+      query,
+      raw: searchResult,
+      success: true
+    });
+
+  } catch (error) {
+    console.error("MCP test error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Simple market volume chart endpoint
+app.get("/market-volumes", async (req, res) => {
+  try {
+    const { query = "Bitcoin", limit = 5 } = req.query;
+    
+    if (!mcpClient) {
+      return res.status(503).json({ error: "MCP client not connected" });
+    }
+
+    console.log(`📊 Fetching market volumes for: ${query}`);
+
+    // Use search_markets to get markets with volume data
+    const searchResult = await mcpClient.callTool({
+      name: "search_markets",
+      arguments: { 
+        query: query as string,
+        limit: parseInt(limit as string),
+        order: "volume" // Order by volume for better chart data
+      }
+    });
+
+    const marketsData = JSON.parse(JSON.stringify(searchResult.content));
+    
+    console.log(`📊 Raw MCP response:`, marketsData);
+    
+    // Parse the text content from MCP response
+    let chartData = [];
+    
+    if (marketsData && marketsData.length > 0) {
+      const textContent = marketsData[0].text;
+      console.log(`📊 Parsing text: ${textContent.substring(0, 200)}...`);
+      
+      // Split into market blocks - each market starts with a number
+      const marketBlocks = textContent.split(/(?=\d+\.\s\*\*)/);
+      
+      for (const block of marketBlocks) {
+        if (!block.trim()) continue;
+        
+        // Extract market name
+        const marketMatch = block.match(/^\d+\.\s\*\*(.*?)\*\*/);
+        if (!marketMatch) continue;
+        
+        const question = marketMatch[1].trim();
+        
+        // Extract slug
+        const slugMatch = block.match(/Slug:\s`([^`]+)`/i);
+        const slug = slugMatch ? slugMatch[1] : '';
+        
+        // Extract volume and probability from the combined line
+        const volumeMatch = block.match(/Volume:\s\$([0-9,]+\.?[0-9]*[kmb]?)/i);
+        const probabilityMatch = block.match(/Probability:\s([0-9]+\.?[0-9]*)%/i);
+        
+        if (volumeMatch) {
+          const volumeStr = volumeMatch[1];
+          let volumeNum = parseFloat(volumeStr.replace(/,/g, ''));
+          
+          // Convert k, m, b to numbers  
+          if (volumeStr.toLowerCase().includes('k')) volumeNum *= 1000;
+          if (volumeStr.toLowerCase().includes('m')) volumeNum *= 1000000;
+          if (volumeStr.toLowerCase().includes('b')) volumeNum *= 1000000000;
+          
+          chartData.push({
+            name: question.length > 50 ? question.substring(0, 50) + "..." : question,
+            volume: volumeNum,
+            probability: probabilityMatch ? parseFloat(probabilityMatch[1]) : 0,
+            slug: slug
+          });
+        }
+      }
+    }
+
+    console.log(`✅ Found ${chartData.length} markets for volume chart`);
+
+    res.json({
+      query,
+      chartData,
+      total: chartData.length
+    });  } catch (error) {
+    console.error("Error fetching market volumes:", error);
+    res.status(500).json({ error: "Failed to fetch market volumes" });
+  }
 });
 
 // Start Express server

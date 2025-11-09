@@ -5,6 +5,7 @@ import { Markdown } from "./markdown";
 import { message } from "../../interfaces/interfaces";
 import { MessageActions } from "@/components/custom/actions";
 import { RelatedNews } from "@/components/custom/related-news";
+import { MessageChart } from "@/components/custom/MessageChart";
 
 export const PreviewMessage = ({ message }: { message: message }) => {
   return (
@@ -30,7 +31,10 @@ export const PreviewMessage = ({ message }: { message: message }) => {
             <div className="flex flex-col gap-4 text-left">
               <Markdown>{message.content}</Markdown>
               {message.role === "assistant" && (
-                <RelatedNews query={message.content} />
+                <>
+                  <MessageChart content={message.content} />
+                  <RelatedNews query={message.content} />
+                </>
               )}
             </div>
           )}

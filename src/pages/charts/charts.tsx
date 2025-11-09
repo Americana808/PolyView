@@ -1,5 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { TradeChart, VolumeChart } from '../../components/custom/TradeChart';
+import { MarketVolumeChart } from '../../components/custom/VolumeChart';
+import { Header } from '../../components/custom/header';
 
 // Mock trade data for testing
 const mockTrades = [
@@ -94,28 +96,43 @@ const mockSportsTrades = [
 ];
 
 export function Charts() {
+  const [searchQuery, setSearchQuery] = useState('Bitcoin');
+
   return (
-    <div className="min-h-screen bg-background p-8">
-      <div className="max-w-6xl mx-auto space-y-8">
+    <div className="min-h-screen bg-background">
+      <Header />
+      <div className="max-w-6xl mx-auto p-8 space-y-8">
         <div className="text-center space-y-4">
-          <h1 className="text-4xl font-bold text-foreground">Chart Components Test</h1>
+          <h1 className="text-4xl font-bold text-foreground">Live Market Charts</h1>
           <p className="text-muted-foreground text-lg">
-            Testing TradeChart and VolumeChart components with mock data
+            Real-time Polymarket data visualization
           </p>
-          <div className="flex justify-center space-x-4">
-            <a 
-              href="/" 
-              className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90"
-            >
-              ← Back to Canvas
-            </a>
-            <a 
-              href="/chat" 
-              className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/90"
-            >
-              Go to Chat
-            </a>
+        </div>
+        
+        {/* Live Volume Chart Section */}
+        <div className="space-y-4">
+          <h2 className="text-2xl font-semibold text-foreground">📊 Market Volume Comparison</h2>
+          <div className="flex gap-4 items-center">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search markets (e.g., Bitcoin, Trump, Lakers)"
+              className="flex-1 px-4 py-2 border rounded-md bg-background"
+            />
+            <div className="text-sm text-muted-foreground">
+              Press Enter to search
+            </div>
           </div>
+          <MarketVolumeChart query={searchQuery} limit={8} />
+        </div>
+
+        {/* Mock Charts Section */}
+        <div className="space-y-4">
+          <h2 className="text-2xl font-semibold text-foreground">📈 Sample Trading Charts (Mock Data)</h2>
+          <p className="text-muted-foreground">
+            These use mock data to demonstrate the chart components
+          </p>
         </div>
         
         <div className="space-y-8">

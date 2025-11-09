@@ -15,14 +15,24 @@ interface ChatInputProps {
 
 const suggestedActions = [
     {
-        title: 'How is the weather',
-        label: 'in Vienna?',
-        action: 'How is the weather in Vienna today?',
+        title: 'Show Bitcoin market charts',
+        label: 'with volume data',
+        action: 'Show me Bitcoin market data with volume charts',
     },
     {
-        title: 'Tell me a fun fact',
-        label: 'about pandas',
-        action: 'Tell me an interesting fact about pandas',
+        title: 'Compare election markets',
+        label: 'Trump vs Harris',
+        action: 'Compare Trump vs Harris election markets with visualizations',
+    },
+    {
+        title: 'Trending market analysis',
+        label: 'with charts',
+        action: 'What are the trending prediction markets? Show me volume charts',
+    },
+    {
+        title: 'Sports betting markets',
+        label: 'visualization',
+        action: 'Show me sports betting markets with chart visualization',
     },
 ];
 
