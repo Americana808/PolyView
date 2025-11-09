@@ -34,6 +34,44 @@ let mcpTransport: StreamableHTTPClientTransport | null = null;
 let oauthProvider: SimpleOAuthProvider | null = null;
 let availableTools: Anthropic.Messages.Tool[] = [];
 
+// Add connection health check
+async function checkMCPConnection(): Promise<boolean> {
+  if (!mcpClient) {
+    console.log("❌ MCP client is null");
+    return false;
+  }
+  
+  try {
+    // Try a simple operation to test connection
+    await mcpClient.listTools();
+    return true;
+  } catch (error) {
+    console.log(`❌ MCP connection test failed: ${error.message}`);
+    return false;
+  }
+}
+
+// Add reconnection function
+async function reconnectMCP(): Promise<boolean> {
+  console.log("🔄 Attempting to reconnect to MCP server...");
+  
+  try {
+    // Close existing connection
+    if (mcpClient && mcpTransport) {
+      await mcpClient.close();
+      mcpClient = null;
+      mcpTransport = null;
+    }
+    
+    // Re-initialize
+    await initializeMCPClient();
+    return await checkMCPConnection();
+  } catch (error) {
+    console.error("❌ Reconnection failed:", error);
+    return false;
+  }
+}
+
 async function initializeMCPClient() {
   try {
     console.log("🔌 Connecting to Polymarket MCP server...");
@@ -515,10 +553,12 @@ app.get("/oauth/callback", async (req, res) => {
 });
 
 // Health check endpoint
-app.get("/health", (req, res) => {
+app.get("/health", async (req, res) => {
+  const isConnected = await checkMCPConnection();
   res.json({
     status: "ok",
     mcpConnected: mcpClient !== null,
+    mcpHealthy: isConnected,
     toolsAvailable: availableTools.length,
   });
 });
@@ -573,20 +613,60 @@ app.get("/market-volumes", async (req, res) => {
     const { query = "Bitcoin", limit = 5 } = req.query;
     
     if (!mcpClient) {
-      return res.status(503).json({ error: "MCP client not connected" });
+      console.log("❌ MCP client not connected, attempting to reconnect...");
+      const reconnected = await reconnectMCP();
+      if (!reconnected) {
+        return res.status(503).json({ error: "MCP client not connected and reconnection failed" });
+      }
     }
 
     console.log(`📊 Fetching market volumes for: ${query}`);
 
-    // Use search_markets to get markets with volume data
-    const searchResult = await mcpClient.callTool({
-      name: "search_markets",
-      arguments: { 
-        query: query as string,
-        limit: parseInt(limit as string),
-        order: "volume" // Order by volume for better chart data
+    // Check connection health before making request
+    const isConnected = await checkMCPConnection();
+    if (!isConnected) {
+      console.log("❌ MCP connection unhealthy, attempting to reconnect...");
+      const reconnected = await reconnectMCP();
+      if (!reconnected) {
+        return res.status(503).json({ error: "MCP connection failed" });
       }
-    });
+    }
+
+    // Use search_markets to get markets with volume data
+    let searchResult;
+    try {
+      searchResult = await mcpClient!.callTool({
+        name: "search_markets",
+        arguments: { 
+          query: query as string,
+          limit: parseInt(limit as string),
+          order: "volume" // Order by volume for better chart data
+        }
+      });
+    } catch (mcpError) {
+      console.error("❌ MCP call failed:", mcpError);
+      
+      // If it's a timeout, try to reconnect once
+      if (mcpError.message && mcpError.message.includes('timed out')) {
+        console.log("🔄 Timeout detected, trying to reconnect...");
+        const reconnected = await reconnectMCP();
+        if (reconnected) {
+          // Retry the call once
+          searchResult = await mcpClient!.callTool({
+            name: "search_markets",
+            arguments: { 
+              query: query as string,
+              limit: parseInt(limit as string),
+              order: "volume"
+            }
+          });
+        } else {
+          throw new Error("MCP connection failed after timeout");
+        }
+      } else {
+        throw mcpError;
+      }
+    }
 
     const marketsData = JSON.parse(JSON.stringify(searchResult.content));
     
@@ -598,6 +678,158 @@ app.get("/market-volumes", async (req, res) => {
     if (marketsData && marketsData.length > 0) {
       const textContent = marketsData[0].text;
       console.log(`📊 Parsing text: ${textContent.substring(0, 200)}...`);
+      
+      // Parse markets line by line - more robust approach
+      const lines = textContent.split('\n');
+      let currentMarket = null;
+      
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        
+        // Check for market title line (starts with number and **)
+        const titleMatch = line.match(/^(\d+)\.\s\*\*(.*?)\*\*/);
+        if (titleMatch) {
+          // Save previous market if complete
+          if (currentMarket && currentMarket.hasVolume) {
+            chartData.push({
+              name: currentMarket.question.length > 50 ? currentMarket.question.substring(0, 50) + "..." : currentMarket.question,
+              volume: currentMarket.volumeNum,
+              probability: currentMarket.probability,
+              slug: currentMarket.slug
+            });
+          }
+          
+          // Start new market
+          currentMarket = {
+            question: titleMatch[2].trim(),
+            slug: '',
+            volumeNum: 0,
+            probability: 0,
+            hasVolume: false
+          };
+          continue;
+        }
+        
+        if (currentMarket) {
+          // Extract slug
+          const slugMatch = line.match(/Slug:\s*`([^`]+)`/i);
+          if (slugMatch) {
+            currentMarket.slug = slugMatch[1];
+            continue;
+          }
+          
+          // Extract probability and volume from combined line
+          const probVolumeMatch = line.match(/Probability:\s*([0-9]+\.?[0-9]*)%.*?Volume:\s*\$([0-9,]+\.?[0-9]*[kmb]?)/i);
+          if (probVolumeMatch) {
+            currentMarket.probability = parseFloat(probVolumeMatch[1]);
+            
+            const volumeStr = probVolumeMatch[2];
+            let volumeNum = parseFloat(volumeStr.replace(/,/g, ''));
+            
+            // Convert k, m, b to numbers
+            if (volumeStr.toLowerCase().includes('k')) volumeNum *= 1000;
+            if (volumeStr.toLowerCase().includes('m')) volumeNum *= 1000000;
+            if (volumeStr.toLowerCase().includes('b')) volumeNum *= 1000000000;
+            
+            currentMarket.volumeNum = volumeNum;
+            currentMarket.hasVolume = true;
+          }
+        }
+      }
+      
+      // Don't forget the last market
+      if (currentMarket && currentMarket.hasVolume) {
+        chartData.push({
+          name: currentMarket.question.length > 50 ? currentMarket.question.substring(0, 50) + "..." : currentMarket.question,
+          volume: currentMarket.volumeNum,
+          probability: currentMarket.probability,
+          slug: currentMarket.slug
+        });
+      }
+    }
+
+    console.log(`✅ Found ${chartData.length} markets for volume chart`);
+
+    res.json({
+      query,
+      chartData,
+      total: chartData.length
+    });
+  } catch (error) {
+    console.error("Error fetching market volumes:", error);
+    res.status(500).json({ error: "Failed to fetch market volumes" });
+  }
+});
+
+// Market probability chart endpoint
+app.get("/market-probabilities", async (req, res) => {
+  try {
+    const { query = "Trump", limit = 5 } = req.query;
+    
+    if (!mcpClient) {
+      console.log("❌ MCP client not connected for probabilities, attempting to reconnect...");
+      const reconnected = await reconnectMCP();
+      if (!reconnected) {
+        return res.status(503).json({ error: "MCP client not connected and reconnection failed" });
+      }
+    }
+
+    console.log(`🎯 Fetching market probabilities for: ${query}`);
+
+    // Check connection health before making request
+    const isConnected = await checkMCPConnection();
+    if (!isConnected) {
+      console.log("❌ MCP connection unhealthy, attempting to reconnect...");
+      const reconnected = await reconnectMCP();
+      if (!reconnected) {
+        return res.status(503).json({ error: "MCP connection failed" });
+      }
+    }
+
+    // Use search_markets to get markets with probability data
+    let searchResult;
+    try {
+      searchResult = await mcpClient!.callTool({
+        name: "search_markets",
+        arguments: { 
+          query: query as string,
+          limit: parseInt(limit as string)
+        }
+      });
+    } catch (mcpError) {
+      console.error("❌ MCP call failed:", mcpError);
+      
+      // If it's a timeout, try to reconnect once
+      if (mcpError.message && mcpError.message.includes('timed out')) {
+        console.log("🔄 Timeout detected, trying to reconnect...");
+        const reconnected = await reconnectMCP();
+        if (reconnected) {
+          // Retry the call once
+          searchResult = await mcpClient!.callTool({
+            name: "search_markets",
+            arguments: { 
+              query: query as string,
+              limit: parseInt(limit as string)
+            }
+          });
+        } else {
+          throw new Error("MCP connection failed after timeout");
+        }
+      } else {
+        throw mcpError;
+      }
+    }
+
+    const marketsData = JSON.parse(JSON.stringify(searchResult.content));
+    
+    console.log(`🎯 Raw MCP response:`, marketsData);
+    
+    // Parse the text content from MCP response
+    let chartData = [];
+    
+    if (marketsData && marketsData.length > 0) {
+      const textContent = marketsData[0].text;
+      console.log(`🎯 Parsing text: ${textContent.substring(0, 200)}...`);
       
       // Split into market blocks - each market starts with a number
       const marketBlocks = textContent.split(/(?=\d+\.\s\*\*)/);
@@ -619,34 +851,30 @@ app.get("/market-volumes", async (req, res) => {
         const volumeMatch = block.match(/Volume:\s\$([0-9,]+\.?[0-9]*[kmb]?)/i);
         const probabilityMatch = block.match(/Probability:\s([0-9]+\.?[0-9]*)%/i);
         
-        if (volumeMatch) {
-          const volumeStr = volumeMatch[1];
-          let volumeNum = parseFloat(volumeStr.replace(/,/g, ''));
-          
-          // Convert k, m, b to numbers  
-          if (volumeStr.toLowerCase().includes('k')) volumeNum *= 1000;
-          if (volumeStr.toLowerCase().includes('m')) volumeNum *= 1000000;
-          if (volumeStr.toLowerCase().includes('b')) volumeNum *= 1000000000;
+        if (probabilityMatch) {
+          const probability = parseFloat(probabilityMatch[1]);
+          const volume = volumeMatch ? volumeMatch[1] : 'N/A';
           
           chartData.push({
-            name: question.length > 50 ? question.substring(0, 50) + "..." : question,
-            volume: volumeNum,
-            probability: probabilityMatch ? parseFloat(probabilityMatch[1]) : 0,
+            name: question.length > 40 ? question.substring(0, 40) + "..." : question,
+            probability: probability,
+            volume: volume,
             slug: slug
           });
         }
       }
     }
 
-    console.log(`✅ Found ${chartData.length} markets for volume chart`);
+    console.log(`✅ Found ${chartData.length} markets for probability chart`);
 
     res.json({
       query,
       chartData,
       total: chartData.length
-    });  } catch (error) {
-    console.error("Error fetching market volumes:", error);
-    res.status(500).json({ error: "Failed to fetch market volumes" });
+    });
+  } catch (error) {
+    console.error("Error fetching market probabilities:", error);
+    res.status(500).json({ error: "Failed to fetch market probabilities" });
   }
 });
 

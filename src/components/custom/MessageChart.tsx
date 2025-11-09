@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { MarketVolumeChart } from './VolumeChart';
+import { MarketProbabilityChart } from './ProbabilityChart';
 
 interface MessageChartProps {
   content: string;
@@ -9,33 +10,58 @@ interface MessageChartProps {
 function detectChartTriggers(content: string): { type: string; query?: string } | null {
   const lower = content.toLowerCase();
   
-  // Look for specific chart trigger patterns
+  // Debug what we're checking
+  console.log('🔍 Chart detection checking:', lower.substring(0, 200));
   
-  // Volume charts: "show volume for bitcoin" or "volume chart for trump"
-  const volumeMatch = content.match(/(?:volume|volumes?)\s+(?:chart\s+)?(?:for\s+)?([a-zA-Z0-9\s]+)/i);
-  if (volumeMatch || lower.includes('volume chart')) {
-    const query = volumeMatch ? volumeMatch[1].trim() : 'bitcoin'; // default to bitcoin
+  // Look for market-related content with common keywords
+  const marketKeywords = ['bitcoin', 'btc', 'trump', 'harris', 'election', 'crypto', 'sports'];
+  const hasMarketKeyword = marketKeywords.some(keyword => lower.includes(keyword));
+  
+  if (!hasMarketKeyword) {
+    console.log('❌ No market keywords found');
+    return null;
+  }
+  
+  // Extract the main topic from the content
+  let query = 'bitcoin'; // default
+  for (const keyword of marketKeywords) {
+    if (lower.includes(keyword)) {
+      query = keyword;
+      break;
+    }
+  }
+  
+  // Probability-focused patterns
+  if (lower.includes('probability') || lower.includes('probabilities') || 
+      lower.includes('chance') || lower.includes('%') ||
+      lower.includes('odds') || lower.includes('likelihood')) {
+    console.log('✅ Probability chart triggered for:', query);
+    return { type: 'probability', query };
+  }
+  
+  // Volume-focused patterns
+  if (lower.includes('volume') || lower.includes('trading') || 
+      lower.includes('activity') || lower.includes('$')) {
+    console.log('✅ Volume chart triggered for:', query);
     return { type: 'volume', query };
   }
   
-  // Market comparison: "compare markets for bitcoin" 
-  const compareMatch = content.match(/compare\s+markets?\s+(?:for\s+)?([a-zA-Z0-9\s]+)/i);
-  if (compareMatch) {
-    return { type: 'volume', query: compareMatch[1].trim() };
+  // Chart/visualization patterns
+  if (lower.includes('chart') || lower.includes('visualiz') || 
+      lower.includes('graph') || lower.includes('show') ||
+      lower.includes('display') || lower.includes('data')) {
+    console.log('✅ Generic chart triggered for:', query);
+    return { type: 'volume', query }; // Default to volume
   }
   
-  // Chart visualization: "chart bitcoin markets" or "visualize trump markets"
-  const chartMatch = content.match(/(?:chart|visualize|show\s+charts?)\s+([a-zA-Z0-9\s]+)\s+markets?/i);
-  if (chartMatch) {
-    return { type: 'volume', query: chartMatch[1].trim() };
+  // Market analysis patterns
+  if (lower.includes('market') || lower.includes('analysis') || 
+      lower.includes('compare') || lower.includes('trends')) {
+    console.log('✅ Market analysis chart triggered for:', query);
+    return { type: 'volume', query };
   }
   
-  // Explicit chart commands: "chart: bitcoin" 
-  const explicitMatch = content.match(/chart:\s*([a-zA-Z0-9\s]+)/i);
-  if (explicitMatch) {
-    return { type: 'volume', query: explicitMatch[1].trim() };
-  }
-  
+  console.log('❌ No chart triggers found');
   return null;
 }
 
@@ -46,11 +72,24 @@ export const MessageChart: React.FC<MessageChartProps> = ({ content }) => {
     // Only check for chart triggers in complete messages (not while streaming)
     if (content && !content.includes('...') && content.length > 50) {
       const trigger = detectChartTriggers(content);
+      
+      // Debug logging
+      console.log('🔍 MessageChart checking content:', content.substring(0, 100) + '...');
+      console.log('🎯 Chart trigger detected:', trigger);
+      
       setChartTrigger(trigger);
     }
   }, [content]);
 
-  if (!chartTrigger) return null;
+  // For testing: always show a chart if content mentions Bitcoin
+  const testMode = content.toLowerCase().includes('bitcoin');
+  
+  if (!chartTrigger && !testMode) return null;
+  
+  // Use test trigger if no regular trigger found
+  const finalTrigger = chartTrigger || (testMode ? { type: 'volume', query: 'bitcoin' } : null);
+  
+  if (!finalTrigger) return null;
 
   return (
     <div className="mt-6 border rounded-lg p-4 bg-muted/30">
@@ -61,9 +100,16 @@ export const MessageChart: React.FC<MessageChartProps> = ({ content }) => {
         </span>
       </div>
       
-      {chartTrigger.type === 'volume' && chartTrigger.query && (
+      {finalTrigger.type === 'volume' && finalTrigger.query && (
         <MarketVolumeChart 
-          query={chartTrigger.query}
+          query={finalTrigger.query}
+          limit={5}
+        />
+      )}
+      
+      {finalTrigger.type === 'probability' && finalTrigger.query && (
+        <MarketProbabilityChart 
+          query={finalTrigger.query}
           limit={5}
         />
       )}

@@ -15,23 +15,23 @@ interface ChatInputProps {
 
 const suggestedActions = [
     {
-        title: 'Show Bitcoin market charts',
-        label: 'with volume data',
+        title: 'Show Bitcoin probability chart',
+        label: 'market predictions',
+        action: 'Show me Bitcoin market probabilities with probability chart',
+    },
+    {
+        title: 'Compare election probabilities',
+        label: 'Trump markets',
+        action: 'Show me Trump election market probabilities with probability chart',
+    },
+    {
+        title: 'Bitcoin volume analysis',
+        label: 'trading data',
         action: 'Show me Bitcoin market data with volume charts',
     },
     {
-        title: 'Compare election markets',
-        label: 'Trump vs Harris',
-        action: 'Compare Trump vs Harris election markets with visualizations',
-    },
-    {
-        title: 'Trending market analysis',
-        label: 'with charts',
-        action: 'What are the trending prediction markets? Show me volume charts',
-    },
-    {
-        title: 'Sports betting markets',
-        label: 'visualization',
+        title: 'Sports betting analysis',
+        label: 'with visualizations',
         action: 'Show me sports betting markets with chart visualization',
     },
 ];
