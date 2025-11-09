@@ -538,8 +538,26 @@ app.get("/tools", (req, res) => {
 // Recent trades endpoint (available regardless of MCP connection state)
 // Query params: limit (default 10), side=BUY|SELL (optional)
 app.get("/recent-trades", async (req, res) => {
-  const limit = Math.min(parseInt((req.query.limit as string) || "10", 10) || 10, 100);
+  // Base pagination and filtering params
+  const limitParam = Math.max(parseInt((req.query.limit as string) || "10", 10) || 10, 1);
   const sideFilter = (req.query.side as string)?.toUpperCase();
+  const minTotal = parseFloat((req.query.minTotal as string) || "0") || 0;
+
+  // 24h lookback and pagination
+  const timeWindowHours = parseFloat((req.query.timeWindowHours as string) || "0") || 0; // e.g. 24
+  const page = Math.max(parseInt((req.query.page as string) || "1", 10) || 1, 1);
+  const pageSize = Math.max(parseInt((req.query.pageSize as string) || `${limitParam}`, 10) || limitParam, 1);
+  const now = Date.now();
+  const sinceMs = timeWindowHours > 0 ? now - timeWindowHours * 60 * 60 * 1000 : 0;
+
+  // When using a time window, we need to pull a larger batch from MCP then filter/paginate locally.
+  // Allow a configurable fetchLimit, default 300, up to 1000.
+  // Heuristic: if using time window, pull a larger batch to increase 24h coverage
+  const defaultFetch = timeWindowHours > 0 ? 600 : limitParam; // raise from 300 to 600
+  const fetchLimit = Math.min(
+    Math.max(parseInt((req.query.fetchLimit as string) || String(defaultFetch), 10) || defaultFetch, 1),
+    2000
+  );
 
   if (!mcpClient) {
     return res.status(503).json({ error: "MCP client not connected", trades: [] });
@@ -548,7 +566,7 @@ app.get("/recent-trades", async (req, res) => {
   try {
     const toolResult = await mcpClient.callTool({
       name: "get_trades",
-      arguments: { limit }
+      arguments: { limit: fetchLimit }
     });
 
     // Expect text summary in toolResult.content[0].text
@@ -556,25 +574,92 @@ app.get("/recent-trades", async (req, res) => {
       ? (toolResult.content[0] as any).text as string
       : "";
 
-    const trades: Array<{ side: string; size: number; price: number; time: string }> = [];
+  type Trade = { side: string; size: number; price: number; time: string; ts?: number };
+    const trades: Trade[] = [];
 
     // Extract individual trade blocks
     // Pattern: index. emoji SIDE size @ $price newline Time: timestamp
-    const tradeRegex = /\n?(\d+)\. .*?(BUY|SELL) ([\d\.]+) @ \$(\d*\.?\d+)\n\s*Time: ([^\n]+)/g;
+  const tradeRegex = /\n?(\d+)\. .*?(BUY|SELL) ([\d\.]+) @ \$(\d*\.?\d+)\n\s*Time: ([^\n]+)/g;
     let match: RegExpExecArray | null;
     while ((match = tradeRegex.exec(text)) !== null) {
-      const [, , side, sizeStr, priceStr, timeStr] = match;
+      const [, , side, sizeStr, priceStr, timeStrRaw] = match;
       const size = parseFloat(sizeStr);
       const price = parseFloat(priceStr);
-      trades.push({ side, size, price, time: timeStr.trim() });
+      const timeStr = (timeStrRaw || "").trim();
+      // Parse timestamps robustly: try Date.parse, then try removing GMT labels, then try ISO fallback
+      let ts = Date.parse(timeStr);
+      if (!Number.isFinite(ts)) {
+        const cleaned = timeStr.replace(/\s*GMT[+-]\d{4}/i, "");
+        ts = Date.parse(cleaned);
+      }
+      if (!Number.isFinite(ts)) {
+        // Try to detect patterns like YYYY-MM-DD HH:MM:SS and treat as UTC
+        const isoish = timeStr
+          .replace(/\s+/g, ' ')
+          .replace(/(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})/, '$1T$2Z');
+        ts = Date.parse(isoish);
+      }
+      trades.push({ side, size, price, time: timeStr, ts: Number.isFinite(ts) ? ts : undefined });
     }
 
-    // Optional side filter
-    const filtered = sideFilter && (sideFilter === "BUY" || sideFilter === "SELL")
+    // Optional side/minTotal filters first
+    let filtered = sideFilter && (sideFilter === "BUY" || sideFilter === "SELL")
       ? trades.filter(t => t.side === sideFilter)
       : trades;
 
-    res.json({ trades: filtered.slice(0, limit), total: filtered.length, rawSummary: text.length ? undefined : text });
+    if (minTotal > 0) {
+      filtered = filtered.filter(t => (t.size * t.price) >= minTotal);
+    }
+
+    // Time window filtering if requested (only keep trades with valid ts inside window)
+    if (timeWindowHours > 0) {
+      // Sort by time desc to ensure newest first, then filter by window
+      filtered = filtered
+        .filter(t => typeof t.ts === "number")
+        .sort((a, b) => (b.ts || 0) - (a.ts || 0))
+        .filter(t => (t.ts as number) >= sinceMs);
+      // Sort by time desc (most recent first)
+      // already sorted above
+    }
+
+    // If no time window, keep original order (assumed most recent first from MCP)
+    // If minTotal used without timeWindow, optionally sort by total desc to surface largest first
+    if (timeWindowHours === 0 && minTotal > 0) {
+      filtered.sort((a, b) => (b.size * b.price) - (a.size * a.price));
+    }
+
+    const totalCount = filtered.length;
+
+    // Pagination
+    const effectivePageSize = timeWindowHours > 0 ? pageSize : limitParam; // Back-compat: when not using window, pageSize defaults to limit
+    const start = (page - 1) * effectivePageSize;
+    const end = start + effectivePageSize;
+    const pageItems = filtered.slice(start, end).map(({ ts, ...rest }) => rest);
+
+    // Optional debug metadata
+    const debug = String(req.query.debug || "").toLowerCase() === "true";
+    const meta: any = debug
+      ? {
+          earliestTs: filtered[filtered.length - 1]?.ts,
+          latestTs: filtered[0]?.ts,
+          earliest: filtered[filtered.length - 1]?.time,
+          latest: filtered[0]?.time,
+          fetched: trades.length,
+          fetchLimit,
+          rawTextLength: text.length,
+          rawPreview: text.slice(0, 500),
+        }
+      : undefined;
+
+    res.json({
+      trades: pageItems,
+      total: totalCount,
+      page,
+      pageSize: effectivePageSize,
+      timeWindowHours: timeWindowHours || undefined,
+      hasMore: end < totalCount,
+      ...(debug ? { meta } : {}),
+    });
   } catch (err) {
     console.error("/recent-trades error:", err);
     res.status(500).json({ error: "Failed to fetch recent trades", trades: [] });
@@ -611,7 +696,7 @@ app.get("/test-search", async (req, res) => {
 
   } catch (error) {
     console.error("MCP test error:", error);
-    res.status(500).json({ error: error.message });
+  res.status(500).json({ error: (error instanceof Error) ? error.message : 'Unknown error' });
   }
 });
 
