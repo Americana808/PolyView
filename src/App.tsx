@@ -4,7 +4,8 @@ import { Canvas } from "./pages/canvas/canvas";
 import { TestNews } from "./pages/test-news";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import { ThemeProvider } from "./context/ThemeContext";
-import { Charts } from "./pages/charts/charts"
+import { Charts } from "./pages/charts/charts";
+import RecentTrades from "./pages/recent-trades";
 
 function App() {
   return (
@@ -16,6 +17,7 @@ function App() {
             <Route path="/chat" element={<Chat />} />
             <Route path="/test-news" element={<TestNews />} />
             <Route path="/charts" element={<Charts />} />
+              <Route path="/recent-trades" element={<RecentTrades />} />
           </Routes>
         </div>
       </Router>

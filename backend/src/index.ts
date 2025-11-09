@@ -54,6 +54,8 @@ async function initializeMCPClient() {
 
     // Try to load saved tokens
     await oauthProvider.loadSavedTokens();
+    // (moved) /recent-trades route is now defined outside initialization for availability pre-connection
+
 
     // Use StreamableHTTP transport for Smithery servers
     mcpTransport = new StreamableHTTPClientTransport(
@@ -531,6 +533,52 @@ app.get("/tools", (req, res) => {
       description: tool.description,
     })),
   });
+});
+
+// Recent trades endpoint (available regardless of MCP connection state)
+// Query params: limit (default 10), side=BUY|SELL (optional)
+app.get("/recent-trades", async (req, res) => {
+  const limit = Math.min(parseInt((req.query.limit as string) || "10", 10) || 10, 100);
+  const sideFilter = (req.query.side as string)?.toUpperCase();
+
+  if (!mcpClient) {
+    return res.status(503).json({ error: "MCP client not connected", trades: [] });
+  }
+
+  try {
+    const toolResult = await mcpClient.callTool({
+      name: "get_trades",
+      arguments: { limit }
+    });
+
+    // Expect text summary in toolResult.content[0].text
+    const text = Array.isArray(toolResult.content) && toolResult.content[0] && (toolResult.content[0] as any).text
+      ? (toolResult.content[0] as any).text as string
+      : "";
+
+    const trades: Array<{ side: string; size: number; price: number; time: string }> = [];
+
+    // Extract individual trade blocks
+    // Pattern: index. emoji SIDE size @ $price newline Time: timestamp
+    const tradeRegex = /\n?(\d+)\. .*?(BUY|SELL) ([\d\.]+) @ \$(\d*\.?\d+)\n\s*Time: ([^\n]+)/g;
+    let match: RegExpExecArray | null;
+    while ((match = tradeRegex.exec(text)) !== null) {
+      const [, , side, sizeStr, priceStr, timeStr] = match;
+      const size = parseFloat(sizeStr);
+      const price = parseFloat(priceStr);
+      trades.push({ side, size, price, time: timeStr.trim() });
+    }
+
+    // Optional side filter
+    const filtered = sideFilter && (sideFilter === "BUY" || sideFilter === "SELL")
+      ? trades.filter(t => t.side === sideFilter)
+      : trades;
+
+    res.json({ trades: filtered.slice(0, limit), total: filtered.length, rawSummary: text.length ? undefined : text });
+  } catch (err) {
+    console.error("/recent-trades error:", err);
+    res.status(500).json({ error: "Failed to fetch recent trades", trades: [] });
+  }
 });
 
 // Test MCP search endpoint
